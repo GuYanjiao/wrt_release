@@ -1,0 +1,97 @@
+name: Build AX1800 Pro Nikki Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MODEL: jdcloud_ipq60xx_libwrt
+  ADD_CONFIG_FRAGMENTS: nikki
+  REMOVE_CONFIG_FRAGMENTS: proxy
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/share/swift || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          docker system prune -af || true
+          df -hT
+
+      - name: Checkout builder
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo apt-get install -y dos2unix libfuse-dev
+
+      - name: Add Nikki configuration
+        shell: bash
+        run: |
+          mkdir -p wrt_core/deconfig/fragments
+          cp custom/nikki.config wrt_core/deconfig/fragments/nikki.config
+
+          config=wrt_core/deconfig/jdcloud_ipq60xx_libwrt.config
+          sed -i \
+            -e 's/^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02=y/# CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-02 is not set/' \
+            -e 's/^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-07=y/# CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_jdcloud_re-cs-07 is not set/' \
+            -e 's/^CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_redmi_ax5-jdcloud=y/# CONFIG_TARGET_DEVICE_qualcommax_ipq60xx_DEVICE_redmi_ax5-jdcloud is not set/' \
+            "$config"
+
+      - name: Prepare source and cache key
+        run: ./wrt_core/pre_clone_action.sh "$MODEL"
+
+      - name: Cache compiler output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ./action_build/.ccache
+            ./action_build/staging_dir
+          key: ax1800pro-nikki-${{ runner.os }}-${{ hashFiles('**/repo_flag', 'custom/nikki.config') }}-${{ github.run_id }}
+          restore-keys: |
+            ax1800pro-nikki-${{ runner.os }}-${{ hashFiles('**/repo_flag', 'custom/nikki.config') }}-
+
+      - name: Build firmware
+        run: ./build.sh "$MODEL"
+
+      - name: Verify firmware contents
+        shell: bash
+        run: |
+          shopt -s nullglob
+          manifests=(firmware/*.manifest)
+          test ${#manifests[@]} -gt 0
+
+          for package in nikki luci-app-nikki mihomo kmod-dummy kmod-inet-diag kmod-nft-socket kmod-nft-tproxy kmod-tun uhttpd; do
+            if ! grep -Eq "^${package}([[:space:]-]|$)" "${manifests[@]}"; then
+              echo "Required package missing from manifest: $package" >&2
+              exit 1
+            fi
+          done
+
+          if grep -Eq '^luci-(app-)?nginx([[:space:]-]|$)|^nginx([[:space:]-]|$)' "${manifests[@]}"; then
+            echo "Unexpected nginx package found; this build must use uHTTPd." >&2
+            exit 1
+          fi
+
+          grep -E '^(kernel|nikki|luci-app-nikki|mihomo|kmod-dummy|kmod-inet-diag|kmod-nft-socket|kmod-nft-tproxy|kmod-tun|uhttpd)([[:space:]-]|$)' "${manifests[@]}"
+
+      - name: Create checksums
+        shell: bash
+        run: |
+          cd firmware
+          sha256sum * > SHA256SUMS
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: JDCloud-RE-SS-01-LibWrt-Nikki-${{ github.run_number }}
+          path: firmware/*
+          if-no-files-found: error
+          retention-days: 14
