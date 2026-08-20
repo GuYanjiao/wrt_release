@@ -48,9 +48,13 @@ jobs:
       - name: Prepare source and cache key
         run: ./wrt_core/pre_clone_action.sh "$MODEL"
 
-      - name: Add Aurora theme source
+      - name: Apply RE-SS-01 source adjustments
         shell: bash
         run: |
+          # This upstream patch targets Aquantia AQR112 PHY hardware, which the
+          # JDCloud RE-SS-01 does not use. It currently fails against Linux 6.12.103.
+          rm -f action_build/target/linux/generic/hack-6.12/725-net-phy-aquantia-add-PHY_IDs-for-AQR112-variants.patch
+
           rm -rf action_build/package/luci-theme-aurora
           git clone --depth 1 https://github.com/eamonxg/luci-theme-aurora.git action_build/package/luci-theme-aurora
 
