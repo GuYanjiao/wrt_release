@@ -32,7 +32,7 @@ jobs:
           sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
           sudo apt-get install -y dos2unix libfuse-dev
 
-      - name: Add Nikki configuration
+      - name: Add custom configuration
         shell: bash
         run: |
           mkdir -p wrt_core/deconfig/fragments
@@ -48,18 +48,38 @@ jobs:
       - name: Prepare source and cache key
         run: ./wrt_core/pre_clone_action.sh "$MODEL"
 
+      - name: Add Aurora theme source
+        shell: bash
+        run: |
+          rm -rf action_build/package/luci-theme-aurora
+          git clone --depth 1 https://github.com/eamonxg/luci-theme-aurora.git action_build/package/luci-theme-aurora
+
       - name: Cache compiler output
         uses: actions/cache@v4
         with:
           path: |
             ./action_build/.ccache
             ./action_build/staging_dir
-          key: ax1800pro-nikki-${{ runner.os }}-${{ hashFiles('**/repo_flag', 'custom/nikki.config') }}-${{ github.run_id }}
+          key: ax1800pro-nikki-ebpf-${{ runner.os }}-${{ hashFiles('**/repo_flag', 'custom/nikki.config') }}-${{ github.run_id }}
           restore-keys: |
-            ax1800pro-nikki-${{ runner.os }}-${{ hashFiles('**/repo_flag', 'custom/nikki.config') }}-
+            ax1800pro-nikki-ebpf-${{ runner.os }}-${{ hashFiles('**/repo_flag', 'custom/nikki.config') }}-
 
       - name: Build firmware
         run: ./build.sh "$MODEL"
+
+      - name: Verify kernel eBPF support
+        shell: bash
+        run: |
+          kernel_config=$(find action_build/build_dir -type f -path '*/linux-*/linux-*/.config' -print -quit)
+          test -n "$kernel_config"
+          echo "Checking $kernel_config"
+
+          for option in BPF BPF_SYSCALL BPF_JIT CGROUP_BPF BPF_EVENTS DEBUG_INFO_BTF; do
+            if ! grep -q "^CONFIG_${option}=y" "$kernel_config"; then
+              echo "Required kernel option missing: CONFIG_${option}=y" >&2
+              exit 1
+            fi
+          done
 
       - name: Verify firmware contents
         shell: bash
@@ -68,7 +88,15 @@ jobs:
           manifests=(firmware/*.manifest)
           test ${#manifests[@]} -gt 0
 
-          for package in nikki luci-app-nikki mihomo kmod-dummy kmod-inet-diag kmod-nft-socket kmod-nft-tproxy kmod-tun uhttpd; do
+          required_packages=(
+            nikki luci-app-nikki mihomo
+            kmod-dummy kmod-inet-diag kmod-nft-socket kmod-nft-tproxy kmod-tun
+            kmod-sched-bpf bpftool libbpf
+            luci-theme-aurora luci-app-package-manager
+            uhttpd
+          )
+
+          for package in "${required_packages[@]}"; do
             if ! grep -Eq "^${package}([[:space:]-]|$)" "${manifests[@]}"; then
               echo "Required package missing from manifest: $package" >&2
               exit 1
@@ -80,7 +108,7 @@ jobs:
             exit 1
           fi
 
-          grep -E '^(kernel|nikki|luci-app-nikki|mihomo|kmod-dummy|kmod-inet-diag|kmod-nft-socket|kmod-nft-tproxy|kmod-tun|uhttpd)([[:space:]-]|$)' "${manifests[@]}"
+          grep -E '^(kernel|nikki|luci-app-nikki|mihomo|kmod-dummy|kmod-sched-bpf|bpftool|libbpf|luci-theme-aurora|luci-app-package-manager|uhttpd)([[:space:]-]|$)' "${manifests[@]}"
 
       - name: Create checksums
         shell: bash
@@ -91,7 +119,7 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: JDCloud-RE-SS-01-LibWrt-Nikki-${{ github.run_number }}
+          name: JDCloud-RE-SS-01-LibWrt-Nikki-eBPF-Aurora-${{ github.run_number }}
           path: firmware/*
           if-no-files-found: error
           retention-days: 14
